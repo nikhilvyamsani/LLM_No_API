@@ -91,16 +91,16 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
                 date_column = col
                 break
 
-        # if not date_column:
-        #     # Default to 'created_on' if no specific date column is identified
-        #     date_column = "Created_on"
+        if not date_column:
+            # Default to 'created_on' if no specific date column is identified
+            date_column = "Created_on"
 
         # Enhanced prompt with exact schema info
         enhanced_prompt = (
             f"donot give this 'Here is the SQL query and result for your question:' kind of text, directly give the sql query without any addition text, since we are going to run your output as query \n"
             f"Database schema for {TABLE_NAME}:\n{schema_info}\n\n"
             f"Important:\n"
-            f"always use like for comparision for date vlaues instead of = for specific date queries,but not for date range type of queries\n"
+            f"always use like for comparision for date vlaues instead of = for specific date queries not for date range type of queries\n"
             f"- For date ranges use: {date_column} BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'\n\n"
             f"Question: {question}\n"
             "Generate MySQL query:"

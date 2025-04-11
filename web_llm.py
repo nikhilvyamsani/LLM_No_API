@@ -1,14 +1,14 @@
+import gradio as gr
 import pandas as pd
-import re
 import mysql.connector
-import os
-from dotenv import load_dotenv
 from urllib.parse import quote_plus
-from typing import Tuple
-
-from langchain_community.llms.ollama import Ollama
+from dotenv import load_dotenv
+import os
+from langchain_ollama import OllamaLLM
 from langchain_community.utilities import SQLDatabase  
 from langchain.chains import create_sql_query_chain
+import re
+from typing import Tuple
 
 # Load environment variables
 load_dotenv()
@@ -29,7 +29,7 @@ encoded_password = quote_plus(MYSQL_CONFIG['password'])
 TABLE_NAME = "anomaly_audit"
 
 # LLM config
-llm = Ollama(model="llama3")
+llm = OllamaLLM(model="llama3")
 
 def get_fresh_db() -> Tuple[mysql.connector.connection.MySQLConnection, SQLDatabase]:
     """Establish fresh database connections."""
@@ -81,7 +81,7 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
             "created_on": ["created", "inserted", "added"],
             "updated_on": ["updated", "modified", "changed"],
             "deleted_on": ["deleted", "removed", "erased", "popped"],
-            "audited_on": ["audited"]
+            "audited_on": ["audited", "audit"]
         }
 
         # Determine the appropriate date column based on the question
@@ -91,16 +91,16 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
                 date_column = col
                 break
 
-        # if not date_column:
-        #     # Default to 'created_on' if no specific date column is identified
-        #     date_column = "Created_on"
+        if not date_column:
+            # Default to 'created_on' if no specific date column is identified
+            date_column = "created_on"
 
         # Enhanced prompt with exact schema info
         enhanced_prompt = (
             f"donot give this 'Here is the SQL query and result for your question:' kind of text, directly give the sql query without any addition text, since we are going to run your output as query \n"
             f"Database schema for {TABLE_NAME}:\n{schema_info}\n\n"
             f"Important:\n"
-            f"always use like for comparision for date vlaues instead of = for specific date queries,but not for date range type of queries\n"
+            f"- Date column is '{date_column}' (NOT 'created_at')\n"
             f"- For date ranges use: {date_column} BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'\n\n"
             f"Question: {question}\n"
             "Generate MySQL query:"
@@ -126,6 +126,20 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
     finally:
         conn.close()
 
-def list_tables():
-    """Return available tables for UI."""
-    return [TABLE_NAME]
+# Gradio UI
+with gr.Blocks() as demo:
+    gr.Markdown("# Ask Your Database (LLaMA3 + MySQL)")
+    question_input = gr.Textbox(label="Enter your question")
+    sql_output = gr.Textbox(label="Generated SQL Query")
+    result_output = gr.Dataframe(label="Query Results")
+
+    def process_question(question):
+        try:
+            sql, df = ask_llm_and_execute(question)
+            return sql, df
+        except Exception as e:
+            return str(e), pd.DataFrame()
+
+    question_input.submit(process_question, inputs=question_input, outputs=[sql_output, result_output])
+
+demo.launch()
