@@ -1,57 +1,19 @@
-# backend.py
-import pandas as pd
-import re
-import mysql.connector
-import os
-from dotenv import load_dotenv
-from langchain_community.llms.ollama import Ollama
-from langchain_community.utilities import SQLDatabase  
-from langchain.chains import create_sql_query_chain
-
-# 🔐 Load environment variables
-load_dotenv()
-
-# ✅ Load MySQL config from .env
-MYSQL_CONFIG = {
-    "host": os.getenv("MYSQL_HOST"),
-    "port": int(os.getenv("MYSQL_PORT")),
-    "user": os.getenv("MYSQL_USER"),
-    "password": os.getenv("MYSQL_PASSWORD"),
-    "database": os.getenv("MYSQL_DATABASE"),
-}
-db_uri = f"mysql+pymysql://{MYSQL_CONFIG['user']}:{MYSQL_CONFIG['password']}@{MYSQL_CONFIG['host']}:{MYSQL_CONFIG['port']}/{MYSQL_CONFIG['database']}"
-print("DB URI:", db_uri)
-
-# ✅ Only include one table (optional)
-TABLE_NAME = "anomaly_audit"
-
-# ✅ LLM config
-llm = Ollama(model="llama3")
-
-# ✅ Establish MySQL connection and LangChain SQLDatabase
-def get_fresh_db():
-    db_uri = (
-        f"mysql+pymysql://{MYSQL_CONFIG['user']}:{MYSQL_CONFIG['password']}"
-        f"@{MYSQL_CONFIG['host']}:{MYSQL_CONFIG['port']}/{MYSQL_CONFIG['database']}"
-    )
-    conn = mysql.connector.connect(**MYSQL_CONFIG)
-    db = SQLDatabase.from_uri(db_uri, include_tables=[TABLE_NAME])
-    return conn, db
 import pandas as pd
 import re
 import mysql.connector
 import os
 from dotenv import load_dotenv
 from urllib.parse import quote_plus
+from typing import Tuple
 
 from langchain_community.llms.ollama import Ollama
 from langchain_community.utilities import SQLDatabase  
 from langchain.chains import create_sql_query_chain
 
-# 🔐 Load environment variables
+# Load environment variables
 load_dotenv()
 
-# ✅ Load MySQL config from .env
+# MySQL config from .env
 MYSQL_CONFIG = {
     "host": os.getenv("MYSQL_HOST"),
     "port": int(os.getenv("MYSQL_PORT")),
@@ -60,17 +22,17 @@ MYSQL_CONFIG = {
     "database": os.getenv("MYSQL_DATABASE"),
 }
 
-# ✅ Encode password for URI
+# Encode password for URI
 encoded_password = quote_plus(MYSQL_CONFIG['password'])
 
-# ✅ Only include one table (optional)
+# Table to query
 TABLE_NAME = "anomaly_audit"
 
-# ✅ LLM config
+# LLM config
 llm = Ollama(model="llama3")
 
-# ✅ Establish MySQL connection and LangChain SQLDatabase
-def get_fresh_db():
+def get_fresh_db() -> Tuple[mysql.connector.connection.MySQLConnection, SQLDatabase]:
+    """Establish fresh database connections."""
     db_uri = (
         f"mysql+pymysql://{MYSQL_CONFIG['user']}:{encoded_password}"
         f"@{MYSQL_CONFIG['host']}:{MYSQL_CONFIG['port']}/{MYSQL_CONFIG['database']}"
@@ -79,72 +41,91 @@ def get_fresh_db():
     db = SQLDatabase.from_uri(db_uri, include_tables=[TABLE_NAME])
     return conn, db
 
-# ✅ Ask LLM → convert to SQL → validate and run
-def ask_llm_and_execute(question: str):
+def extract_clean_sql_block(text: str) -> str:
+    """Extract and clean SQL from LLM output."""
+    # Try markdown code block first
+    markdown_match = re.search(r'```(?:sql)?\s*(SELECT.*?)```', text, re.DOTALL | re.IGNORECASE)
+    if markdown_match:
+        return clean_sql_string(markdown_match.group(1))
+    
+    # Fallback to SQLQuery: prefix
+    sqlquery_match = re.search(r'SQLQuery:\s*(SELECT.*?)(?:\n\n|$|;|```)', text, re.DOTALL | re.IGNORECASE)
+    if sqlquery_match:
+        return clean_sql_string(sqlquery_match.group(1))
+    
+    # Final fallback - find first SELECT
+    select_match = re.search(r'(SELECT.*?)(?=\n\n|$|;|```)', text, re.DOTALL | re.IGNORECASE)
+    return clean_sql_string(select_match.group(1)) if select_match else ""
+
+def clean_sql_string(sql: str) -> str:
+    """Clean and normalize SQL string."""
+    sql = re.sub(r'`([^`]*)`', r'\1', sql)  # Remove backticks
+    sql = re.sub(r';+$', '', sql)           # Remove trailing semicolons
+    sql = re.sub(r'\s+', ' ', sql).strip()   # Normalize whitespace
+    sql = re.sub(r'^[^A-Za-z]*', '', sql)    # Remove leading non-alphabet chars
+    return sql
+
+def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
+    """Main function to execute queries."""
     print(f"\n💬 Question: {question}")
     conn, db = get_fresh_db()
 
     try:
-        sql_chain = create_sql_query_chain(llm, db)
-        sql = sql_chain.invoke({"question": question}).strip()
-        print(f"📄 LLM SQL Output:\n{sql}")
-
-        match = re.search(r"(SELECT[\s\S]+)", sql, re.IGNORECASE)
-        if not match:
-            raise ValueError("No valid SELECT statement found.")
-
-        sql = match.group(1).strip().rstrip(";")
-
-        if not sql.lower().startswith("select"):
-            raise ValueError("Only SELECT queries are allowed (read-only).")
-
+        # Get schema
         cursor = conn.cursor()
+        cursor.execute(f"DESCRIBE {TABLE_NAME}")
+        schema_info = cursor.fetchall()
+
+        # Define keyword mappings for date columns
+        date_column_keywords = {
+            "created_on": ["created", "inserted", "added"],
+            "updated_on": ["updated", "modified", "changed"],
+            "deleted_on": ["deleted", "removed", "erased", "popped"],
+            "audited_on": ["audited"]
+        }
+
+        # Determine the appropriate date column based on the question
+        date_column = None
+        for col, keywords in date_column_keywords.items():
+            if any(keyword in question.lower() for keyword in keywords):
+                date_column = col
+                break
+
+        if not date_column:
+            # Default to 'created_on' if no specific date column is identified
+            date_column = "Created_on"
+
+        # Enhanced prompt with exact schema info
+        enhanced_prompt = (
+            f"donot give this 'Here is the SQL query and result for your question:' kind of text, directly give the sql query without any addition text, since we are going to run your output as query \n"
+            f"Database schema for {TABLE_NAME}:\n{schema_info}\n\n"
+            f"Important:\n"
+            f"always use like for comparision for date vlaues instead of = for specific date queries not for date range type of queries\n"
+            f"- For date ranges use: {date_column} BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'\n\n"
+            f"Question: {question}\n"
+            "Generate MySQL query:"
+        )
+
+        # Generate and clean SQL
+        sql_chain = create_sql_query_chain(llm, db)
+        raw_sql = sql_chain.invoke({"question": enhanced_prompt}).strip()
+        print(f"📄 Raw SQL Output:\n{raw_sql}")
+        
+        sql = extract_clean_sql_block(raw_sql)
+        print(f"📄 Cleaned SQL Output:\n{sql}")
+        
+        # Execute query
         cursor.execute(sql)
+        result = cursor.fetchall()
         columns = [desc[0] for desc in cursor.description]
-        rows = cursor.fetchall()
-        return sql, pd.DataFrame(rows, columns=columns)
+        df = pd.DataFrame(result, columns=columns)
+        return sql, df
 
     except Exception as e:
         raise ValueError(f"SQL Execution Error: {e}")
-
     finally:
         conn.close()
 
-# ✅ Required by UI to display available tables
 def list_tables():
-    return [TABLE_NAME]
-
-# ✅ Ask LLM → convert to SQL → validate and run
-def ask_llm_and_execute(question: str):
-    print(f"\n💬 Question: {question}")
-    conn, db = get_fresh_db()
-
-    try:
-        sql_chain = create_sql_query_chain(llm, db)
-        sql = sql_chain.invoke({"question": question}).strip()
-        print(f"📄 LLM SQL Output:\n{sql}")
-
-        match = re.search(r"(SELECT[\s\S]+)", sql, re.IGNORECASE)
-        if not match:
-            raise ValueError("No valid SELECT statement found.")
-
-        sql = match.group(1).strip().rstrip(";")
-
-        if not sql.lower().startswith("select"):
-            raise ValueError("Only SELECT queries are allowed (read-only).")
-
-        cursor = conn.cursor()
-        cursor.execute(sql)
-        columns = [desc[0] for desc in cursor.description]
-        rows = cursor.fetchall()
-        return sql, pd.DataFrame(rows, columns=columns)
-
-    except Exception as e:
-        raise ValueError(f"SQL Execution Error: {e}")
-
-    finally:
-        conn.close()
-
-# ✅ Required by UI to display available tables
-def list_tables():
+    """Return available tables for UI."""
     return [TABLE_NAME]
