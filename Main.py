@@ -78,10 +78,10 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
 
         # Define keyword mappings for date columns
         date_column_keywords = {
-            "created_on": ["created", "inserted", "added"],
+            "Created_On": ["created", "inserted", "added"],
             "updated_on": ["updated", "modified", "changed"],
             "deleted_on": ["deleted", "removed", "erased", "popped"],
-            "audited_on": ["audited"]
+            "audited_on": ["audited","audits"]
         }
 
         # Determine the appropriate date column based on the question
