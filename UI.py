@@ -23,7 +23,7 @@ col1, col2 = st.columns(2)
 
 with col1:
     if st.button("Audit count by site"):
-        faq_question = "Give me the count of audits done today group by site Id,consider IsAudited for checking if done or not, donot use created_on for this"
+        faq_question = "Give me the count of audits done today for each site / group by site Id,consider IsAudited for checking if done or not"
         with st.spinner("Fetching audit counts..."):
             try:
                 sql, df = backend.ask_llm_and_execute(faq_question)
@@ -39,7 +39,7 @@ with col2:
     if st.button("TPs & FPs"):
         faq_question = (
             "Give me total count of false positive and true positive anomaly audits for today group by siteId . consider Audited_On for filtering "
-            "Remember: audit status is 1 for TP and 0 for FP"
+            "Remember: audit status is 1 for TP and 0 for FP and see the schema before generating query"
         )
         with st.spinner("Fetching TPs and FPs..."):
             try:
