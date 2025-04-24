@@ -1,5 +1,5 @@
 import streamlit as st
-import dummy_ as backend  # Update with your actual backend script name
+import dummy_ as backend  
 import datetime
 
 st.set_page_config(page_title="LLM SQL Chat", layout="centered")
@@ -28,7 +28,7 @@ with col1:
         st.session_state.faq_click = "audit_count"
 
 if st.session_state.get("faq_click") == "audit_count":
-    faq_question = f"Give me the count of audits done between {from_date} and {to_date} for each site or group by site name, consider Created_On for filtering."
+    faq_question = f"Give me the count of audits that are created between {from_date} and {to_date} group by site name,Note : use only Created_On col for this"
     with st.spinner("Fetching audit counts..."):
         try:
             sql, df = backend.ask_llm_and_execute(faq_question)
@@ -49,10 +49,8 @@ with col2:
 
 if st.session_state.get("faq_click") == "tp_fp":
     faq_question = (
-        "Provide the total count of true positives (TP) and false positives (FP) in the anomaly audit records for today, grouped by site name. "
-        "Use the Audited_On column to filter for today's date (CURDATE()). "
-        "Note: audit_status = 1 represents TP, and audit_status = 0 represents FP. "
-        "Refer to the joined_anomaly_view schema before generating the SQL query."
+        "What is the total count of true positives (TP) and false positives (FP) in the anomaly audit records, "
+        "that are audited today for each site"
     )
     with st.spinner("Fetching TPs and FPs..."):
         try:
