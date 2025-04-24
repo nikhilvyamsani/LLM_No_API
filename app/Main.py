@@ -1,45 +1,52 @@
-import pandas as pd
+import os
 import re
 import mysql.connector
-import os
+import pandas as pd
 from dotenv import load_dotenv
 from urllib.parse import quote_plus
-from typing import Tuple
+from typing import Tuple, List
 
 from langchain_community.llms.ollama import Ollama
-from langchain_community.utilities import SQLDatabase  
+from langchain_community.utilities import SQLDatabase
 from langchain.chains import create_sql_query_chain
 
 # Load environment variables
 load_dotenv()
 
-# MySQL config from .env
+# MySQL connection config (without database)
 MYSQL_CONFIG = {
     "host": os.getenv("MYSQL_HOST"),
     "port": int(os.getenv("MYSQL_PORT")),
     "user": os.getenv("MYSQL_USER"),
     "password": os.getenv("MYSQL_PASSWORD"),
-    "database": os.getenv("MYSQL_DATABASE"),
 }
+
+# Database and table definitions
+ANOMALY_DB = "sr_lnt"
+ANOMALY_TABLE = "anomaly_audit"
+SITE_DB = "seekright_v3_poc"
+SITE_TABLE = "tbl_site"
+JOINED_VIEW = "joined_anomaly_view"  
 
 # Encode password for URI
 encoded_password = quote_plus(MYSQL_CONFIG['password'])
 
-# Table to query
-TABLE_NAME = "anomaly_audit"
-
 # LLM config
 llm = Ollama(model="llama3")
 
-def get_fresh_db() -> Tuple[mysql.connector.connection.MySQLConnection, SQLDatabase]:
-    """Establish fresh database connections."""
-    db_uri = (
+def get_db_connection(database: str = None) -> mysql.connector.connection.MySQLConnection:
+    """Establish a database connection."""
+    config = MYSQL_CONFIG.copy()
+    if database:
+        config["database"] = database
+    return mysql.connector.connect(**config)
+
+def create_db_uri(database: str) -> str:
+    """Create a database URI for SQLDatabase."""
+    return (
         f"mysql+pymysql://{MYSQL_CONFIG['user']}:{encoded_password}"
-        f"@{MYSQL_CONFIG['host']}:{MYSQL_CONFIG['port']}/{MYSQL_CONFIG['database']}"
+        f"@{MYSQL_CONFIG['host']}:{MYSQL_CONFIG['port']}/{database}"
     )
-    conn = mysql.connector.connect(**MYSQL_CONFIG)
-    db = SQLDatabase.from_uri(db_uri, include_tables=[TABLE_NAME])
-    return conn, db
 
 def extract_clean_sql_block(text: str) -> str:
     """Extract and clean SQL from LLM output."""
@@ -65,23 +72,62 @@ def clean_sql_string(sql: str) -> str:
     sql = re.sub(r'^[^A-Za-z]*', '', sql)    # Remove leading non-alphabet chars
     return sql
 
+def create_joined_view() -> None:
+    """Create or replace the joined view."""
+    conn = get_db_connection(ANOMALY_DB)
+    cursor = conn.cursor()
+    
+    # Drop the view if it exists
+    cursor.execute(f"DROP VIEW IF EXISTS {JOINED_VIEW}")
+    
+    # Create the joined view
+    create_view_sql = f"""
+    CREATE VIEW {JOINED_VIEW} AS
+    SELECT a.*, s.site_name as site_name
+    FROM {ANOMALY_DB}.{ANOMALY_TABLE} a
+    LEFT JOIN {SITE_DB}.{SITE_TABLE} s ON a.site_id = s.site_id
+    """
+    
+    cursor.execute(create_view_sql)
+    conn.commit()
+    conn.close()
+
+def get_view_schema() -> List[tuple]:
+    """Get the schema of the joined view."""
+    # First ensure the view exists
+    create_joined_view()
+    
+    conn = get_db_connection(ANOMALY_DB)
+    cursor = conn.cursor()
+    cursor.execute(f"DESCRIBE {JOINED_VIEW}")
+    schema = cursor.fetchall()
+    conn.close()
+    return schema
+
 def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
-    """Main function to execute queries."""
+    """Main function to execute queries using the joined view."""
     print(f"\n💬 Question: {question}")
-    conn, db = get_fresh_db()
-
+    
+    # Make sure the joined view exists
+    create_joined_view()
+    
+    # Connect to the database
+    conn = get_db_connection(ANOMALY_DB)
+    
     try:
-        # Get schema
-        cursor = conn.cursor()
-        cursor.execute(f"DESCRIBE {TABLE_NAME}")
-        schema_info = cursor.fetchall()
-
+        # Get schema for the joined view
+        view_schema = get_view_schema()
+        
+        # Create SQLDatabase for LangChain
+        db_uri = create_db_uri(ANOMALY_DB)
+        db = SQLDatabase.from_uri(db_uri)
+        
         # Define keyword mappings for date columns
         date_column_keywords = {
             "Created_On": ["created", "inserted", "added"],
             "updated_on": ["updated", "modified", "changed"],
             "deleted_on": ["deleted", "removed", "erased", "popped"],
-            "audited_on": ["audited","audits"]
+            "audited_on": ["audited", "audits done"]
         }
 
         # Determine the appropriate date column based on the question
@@ -90,21 +136,34 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
             if any(keyword in question.lower() for keyword in keywords):
                 date_column = col
                 break
-
-        # if not date_column:
-        #     # Default to 'created_on' if no specific date column is identified
-        #     date_column = "Created_on"
-
-        # Enhanced prompt with exact schema info
+        
+        # Enhanced prompt with joined view schema
         enhanced_prompt = (
-            f"donot give this 'Here is the SQL query and result for your question:' kind of text, directly give the sql query without any addition text, since we are going to run your output as query \n"
-            f"Database schema for {TABLE_NAME}:\n{schema_info}\n\n"
-            f"Important:\n"
-            f"always use like for comparision for date vlaues instead of = for specific date queries,but not for date range type of queries\n"
-            f"- For date ranges use: {date_column} BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'\n\n"
-            f"Question: {question}\n"
-            "Generate MySQL query:"
-        )
+    f"Generate only a valid MySQL query—no explanations, no markdown, no extra text. "
+    f"This output will be executed directly.\n\n"
+
+    f"Use only the joined view named `{JOINED_VIEW}`. This view merges all columns from `sr_lnt.anomaly_audit` "
+    f"with an additional column `site_name` from `seekright_v3_poc.tbl_site`.\n\n"
+
+    f"Full Schema of `{JOINED_VIEW}`:\n{view_schema}\n\n"
+
+    f"Instructions:\n"
+    f"- Never use original table names — only use `{JOINED_VIEW}`.\n"
+    f"- Only use columns listed in the above schema.\n"
+    f"- For TP/FP analysis, refer to `Audit_status` (1 = TP, 0 = FP).\n"
+    f"- Date-related columns: `Audited_On`, `video_date`, `Created_On`. Choose the correct one based on the query context.\n"
+    f"- For date filters:\n"
+    f"  - Use `LIKE 'YYYY-MM-DD%'` for exact dates.\n"
+    f"  - Use `{date_column} BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'` for ranges.\n"
+    f"- Use `site_name` for site name filtering, and `site_id` for ID-based filters.\n"
+    f"- Never guess column names — rely strictly on the schema provided above.\n"
+    f"- The input question might include audit-specific metrics, site-level filtering, or date filters — infer intent precisely and construct the query accordingly.\n\n"
+
+    f"Question: {question}\n"
+    "Output MySQL query:"
+)
+
+
 
         # Generate and clean SQL
         sql_chain = create_sql_query_chain(llm, db)
@@ -115,6 +174,7 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
         print(f"📄 Cleaned SQL Output:\n{sql}")
         
         # Execute query
+        cursor = conn.cursor()
         cursor.execute(sql)
         result = cursor.fetchall()
         columns = [desc[0] for desc in cursor.description]
@@ -126,6 +186,21 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
     finally:
         conn.close()
 
-def list_tables():
+def list_tables() -> List[str]:
     """Return available tables for UI."""
-    return [TABLE_NAME]
+    return [f"{ANOMALY_DB}.{ANOMALY_TABLE}", f"{SITE_DB}.{SITE_TABLE}", JOINED_VIEW]
+
+def get_fresh_db() -> None:
+    """Initialize the database schema on app start or refresh."""
+    # Ensure the joined view is created and up to date
+    create_joined_view()
+    print("🆕 Fresh database schema initialized.")
+
+# Call get_fresh_db() on app start or when refreshing the schema
+if __name__ == "__main__":
+    # Initialize fresh database schema
+    get_fresh_db()
+    
+    # Example query using the joined view
+    sql, results = ask_llm_and_execute("Show me anomalies from the SRTL site created last week")
+    print(results)

@@ -79,17 +79,21 @@ with st.form("natural_language_query_form"):
     )
     submit_query = st.form_submit_button("Ask")
 
-if submit_query and user_question:
-    with st.spinner("Thinking..."):
-        try:
-            sql, df = backend.ask_llm_and_execute(user_question)
-            st.session_state.sql = sql
-            st.session_state.df = df
-            st.success("✅ Query executed successfully!")
-        except Exception as e:
-            st.error("❌ Error while processing your query:")
-            st.code(str(e), language="bash")
-            st.info("Try asking again in simpler language.")
+# Input validation
+if submit_query:
+    if not user_question.strip():
+        st.warning("⚠️ Please ask a valid question before submitting.")
+    else:
+        with st.spinner("Thinking..."):
+            try:
+                sql, df = backend.ask_llm_and_execute(user_question)
+                st.session_state.sql = sql
+                st.session_state.df = df
+                st.success("✅ Query executed successfully!")
+            except Exception as e:
+                st.error("❌ Error while processing your query:")
+                st.code(str(e), language="bash")
+                st.info("Try asking again in simpler language.")
 
 # Schema browser with error handling
 with st.expander("\U0001F4C4 View Joined Table Schema"):
@@ -152,6 +156,8 @@ elif st.session_state.df is not None:
 st.markdown("---")
 with st.expander("\U0001F4DD Example Queries"):
     st.markdown("""
-    - Show me all anomalies from SRTL site
-    - Show anomalies created last week
+    - Show me all anomalies from SRTL site  
+    - Show anomalies created last week  
+    - Count of audits done today  
+    - TP and FP breakdown by site
     """)

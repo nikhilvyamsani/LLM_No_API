@@ -127,7 +127,7 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
             "Created_On": ["created", "inserted", "added"],
             "updated_on": ["updated", "modified", "changed"],
             "deleted_on": ["deleted", "removed", "erased", "popped"],
-            "audited_on": ["audited", "audits"]
+            "audited_on": ["audited", "audits done"]
         }
 
         # Determine the appropriate date column based on the question
@@ -139,20 +139,31 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
         
         # Enhanced prompt with joined view schema
         enhanced_prompt = (
-            f"Don't include any explanatory text, just the SQL query. I'll run your output directly as a query.\n\n"
-            f"I've created a joined view called '{JOINED_VIEW}' that contains all data from both tables.\n"
-            f"This view includes all columns from anomaly_audit plus an additional 'site_name' column, read all the column name and generate querries accordingly\n\n"
-            f"Joined View Schema ({JOINED_VIEW}):\n{view_schema}\n\n"
-            f"Important notes:\n"
-            f"- For querries like TPs and FPs, use Audit_status col,like if its 1 its TP else if 0 its FP, and for queries like total audits or audits done consider IsAudited "
-            f"- You may be asked for mixed kind of queries, be careful while processing"
-            f"- Always query from the {JOINED_VIEW} view instead of the original tables\n"
-            f"- You can use site_name for filtering by site names and site_id for filtering by IDs\n"
-            f"- For date comparisons, use LIKE instead of = for specific date queries and for today always use curr_date wiht proper col names like Audited_On\n"
-            f"- For date ranges use: {date_column} BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD' if appropriate\n\n"
-            f"Question: {question}\n"
-            "Generate MySQL query:"
-        )
+    f"Generate only a valid MySQL query—no explanations, no markdown, no extra text. "
+    f"This output will be executed directly.\n\n"
+
+    f"Use only the joined view named `{JOINED_VIEW}`. This view merges all columns from `sr_lnt.anomaly_audit` "
+    f"with an additional column `site_name` from `seekright_v3_poc.tbl_site`.\n\n"
+
+    f"Full Schema of `{JOINED_VIEW}`:\n{view_schema}\n\n"
+
+    f"Instructions:\n"
+    f"- Never use original table names — only use `{JOINED_VIEW}`.\n"
+    f"- Only use columns listed in the above schema.\n"
+    f"- For TP/FP analysis, refer to `Audit_status` (1 = TP, 0 = FP).\n"
+    f"- Date-related columns: `Audited_On`, `video_date`, `Created_On`. Choose the correct one based on the query context.\n"
+    f"- For date filters:\n"
+    f"  - Use `LIKE 'YYYY-MM-DD%'` for exact dates.\n"
+    f"  - Use `{date_column} BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'` for ranges.\n"
+    f"- Use `site_name` for site name filtering, and `site_id` for ID-based filters.\n"
+    f"- Never guess column names — rely strictly on the schema provided above.\n"
+    f"- The input question might include audit-specific metrics, site-level filtering, or date filters — infer intent precisely and construct the query accordingly.\n\n"
+
+    f"Question: {question}\n"
+    "Output MySQL query:"
+)
+
+
 
         # Generate and clean SQL
         sql_chain = create_sql_query_chain(llm, db)
