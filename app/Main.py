@@ -24,7 +24,7 @@ MYSQL_CONFIG = {
 # Database and table definitions
 ANOMALY_DB = "sr_lnt"
 ANOMALY_TABLE = "anomaly_audit"
-SITE_DB = "seekright_v3_poc"
+SITE_DB = "seekright_v3"
 SITE_TABLE = "tbl_site"
 JOINED_VIEW = "joined_anomaly_view"  
 
@@ -54,43 +54,65 @@ def extract_clean_sql_block(text: str) -> str:
     markdown_match = re.search(r'```(?:sql)?\s*(SELECT.*?)```', text, re.DOTALL | re.IGNORECASE)
     if markdown_match:
         return clean_sql_string(markdown_match.group(1))
-    
+
     # Fallback to SQLQuery: prefix
     sqlquery_match = re.search(r'SQLQuery:\s*(SELECT.*?)(?:\n\n|$|;|```)', text, re.DOTALL | re.IGNORECASE)
     if sqlquery_match:
         return clean_sql_string(sqlquery_match.group(1))
-    
+
     # Final fallback - find first SELECT
     select_match = re.search(r'(SELECT.*?)(?=\n\n|$|;|```)', text, re.DOTALL | re.IGNORECASE)
     return clean_sql_string(select_match.group(1)) if select_match else ""
 
+
 def clean_sql_string(sql: str) -> str:
     """Clean and normalize SQL string."""
-    sql = re.sub(r'`([^`]*)`', r'\1', sql)  # Remove backticks
-    sql = re.sub(r';+$', '', sql)           # Remove trailing semicolons
-    sql = re.sub(r'\s+', ' ', sql).strip()   # Normalize whitespace
-    sql = re.sub(r'^[^A-Za-z]*', '', sql)    # Remove leading non-alphabet chars
+    # Remove backticks
+    sql = re.sub(r'`([^`]*)`', r'\1', sql)
+
+    # Fix common bad patterns like CURDATE() + '%' -> LIKE CURDATE()%
+    sql = re.sub(r'CURDATE\(\)\s*\+\s*["\']%["\']', r"LIKE CONCAT(CURDATE(), '%')", sql)
+
+    # Remove trailing semicolons
+    sql = re.sub(r';+$', '', sql)
+
+    # Normalize whitespace
+    sql = re.sub(r'\s+', ' ', sql).strip()
+
+    # Remove any leading non-alphabet characters (like punctuation)
+    sql = re.sub(r'^[^A-Za-z]*', '', sql)
+
     return sql
 
+
 def create_joined_view() -> None:
-    """Create or replace the joined view."""
-    conn = get_db_connection(ANOMALY_DB)
+    """Create or replace the joined view across sr_lnt and seekright_v3 databases."""
+    conn = get_db_connection(ANOMALY_DB)  # This connects to sr_lnt
     cursor = conn.cursor()
+
+    try:
+        # Drop the view from sr_lnt
+        cursor.execute(f"DROP VIEW IF EXISTS {ANOMALY_DB}.{JOINED_VIEW}")
+
+        # Create the joined view in sr_lnt
+        create_view_sql = f"""
+        CREATE VIEW {ANOMALY_DB}.{JOINED_VIEW} AS
+        SELECT a.*, s.site_name as site_name
+        FROM {ANOMALY_DB}.{ANOMALY_TABLE} a
+        LEFT JOIN {SITE_DB}.{SITE_TABLE} s ON a.site_id = s.site_id
+        """
+
+        cursor.execute(create_view_sql)
+        conn.commit()
+        print("✅ Joined view created successfully.")
     
-    # Drop the view if it exists
-    cursor.execute(f"DROP VIEW IF EXISTS {JOINED_VIEW}")
-    
-    # Create the joined view
-    create_view_sql = f"""
-    CREATE VIEW {JOINED_VIEW} AS
-    SELECT a.*, s.site_name as site_name
-    FROM {ANOMALY_DB}.{ANOMALY_TABLE} a
-    LEFT JOIN {SITE_DB}.{SITE_TABLE} s ON a.site_id = s.site_id
-    """
-    
-    cursor.execute(create_view_sql)
-    conn.commit()
-    conn.close()
+    except Exception as e:
+        print(f"❌ Failed to create view: {e}")
+        raise
+
+    finally:
+        cursor.close()
+        conn.close()
 
 def get_view_schema() -> List[tuple]:
     """Get the schema of the joined view."""
@@ -99,7 +121,7 @@ def get_view_schema() -> List[tuple]:
     
     conn = get_db_connection(ANOMALY_DB)
     cursor = conn.cursor()
-    cursor.execute(f"DESCRIBE {JOINED_VIEW}")
+    cursor.execute(f"DESCRIBE {ANOMALY_DB}.{JOINED_VIEW}")
     schema = cursor.fetchall()
     conn.close()
     return schema
@@ -143,26 +165,28 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
     f"This output will be executed directly.\n\n"
 
     f"Use only the joined view named `{JOINED_VIEW}`. This view merges all columns from `sr_lnt.anomaly_audit` "
-    f"with an additional column `site_name` from `seekright_v3_poc.tbl_site`.\n\n"
+    f"with an additional column `site_name` from `seekright_v3.tbl_site`.\n\n"
 
     f"Full Schema of `{JOINED_VIEW}`:\n{view_schema}\n\n"
 
     f"Instructions:\n"
     f"- Never use original table names — only use `{JOINED_VIEW}`.\n"
+    f"- Do not add filters like deleted = 0 unless explicitly asked.\n"
     f"- Only use columns listed in the above schema.\n"
     f"- For TP/FP analysis, refer to `Audit_status` (1 = TP, 0 = FP).\n"
     f"- Date-related columns: `Audited_On`, `video_date`, `Created_On`. Choose the correct one based on the query context.\n"
     f"- For date filters:\n"
-    f"  - Use `LIKE 'YYYY-MM-DD%'` for exact dates.\n"
-    f"  - Use `{date_column} BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'` for ranges.\n"
+    f"  - If the question refers to \"today\" or \"now\", use `Audited_On LIKE CONCAT(CURDATE(), '%')` to filter by today's date.\n"
+    f"  - If the user specifies an exact date (e.g., '2024-04-01'), use `Audited_On LIKE 'YYYY-MM-DD%'`.\n"
+    f"  - If a date range is given, use `Audited_On BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'`.\n"
+    f"  - Do not default to today's date unless explicitly mentioned.\n"
     f"- Use `site_name` for site name filtering, and `site_id` for ID-based filters.\n"
     f"- Never guess column names — rely strictly on the schema provided above.\n"
+    f"- Use only columns that are present in the joined view schema. Do not assume the existence of columns not listed.\n"
     f"- The input question might include audit-specific metrics, site-level filtering, or date filters — infer intent precisely and construct the query accordingly.\n\n"
-
     f"Question: {question}\n"
     "Output MySQL query:"
 )
-
 
 
         # Generate and clean SQL
@@ -188,7 +212,7 @@ def ask_llm_and_execute(question: str) -> Tuple[str, pd.DataFrame]:
 
 def list_tables() -> List[str]:
     """Return available tables for UI."""
-    return [f"{ANOMALY_DB}.{ANOMALY_TABLE}", f"{SITE_DB}.{SITE_TABLE}", JOINED_VIEW]
+    return [f"{ANOMALY_DB}.{ANOMALY_TABLE}", f"{SITE_DB}.{SITE_TABLE}", f"{ANOMALY_DB}.{JOINED_VIEW}"]
 
 def get_fresh_db() -> None:
     """Initialize the database schema on app start or refresh."""
@@ -197,10 +221,10 @@ def get_fresh_db() -> None:
     print("🆕 Fresh database schema initialized.")
 
 # Call get_fresh_db() on app start or when refreshing the schema
-if __name__ == "__main__":
-    # Initialize fresh database schema
-    get_fresh_db()
+# if __name__ == "__main__":
+#     # Initialize fresh database schema
+#     get_fresh_db()
     
-    # Example query using the joined view
-    sql, results = ask_llm_and_execute("Show me anomalies from the SRTL site created last week")
-    print(results)
+#     # Example query using the joined view
+#     sql, results = ask_llm_and_execute("Show me anomalies from the SRTL site created last week")
+#     print(results)
