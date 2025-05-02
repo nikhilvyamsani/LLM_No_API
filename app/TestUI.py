@@ -1,161 +1,159 @@
 import streamlit as st
-import dummy_ as backend  
-import datetime
+import pandas as pd
+from datetime import datetime
+import dummy_ as backend
 
-st.set_page_config(page_title="LLM SQL Chat", layout="centered")
+st.set_page_config(page_title="Anomaly Audit Assistant", layout="wide")
 
-st.title("Ask Your Database")
-st.markdown("Query your **MySQL** anomaly data using natural language")
+# Session state for selected org/db
+if "org" not in st.session_state:
+    st.session_state["org"] = "sr_lnt"
+    st.session_state["data_loaded"] = False
+    st.session_state["results"] = None
 
-# Quick FAQs
-st.markdown("---")
-st.subheader("\U0001F4CC Quick FAQs")
+# Sidebar: Organization selection and filters
+with st.sidebar:
+    st.header("🔧 Settings")
 
-# Create columns for layout
-col1, col2 = st.columns(2)
+    # Organization selection
+    org = st.selectbox("Select Organization", [
+        "Sekura", "Roadis-NH08", "Maple Highways", "Adani Road Transport Limited", "JHNSW", "Reliance"
+    ])
+    org_to_db = {
+        "Sekura": "sr_lnt",
+        "Roadis-NH08": "nh08_roadis",
+        "Maple Highways": "Maple_Highways",
+        "Adani Road Transport Limited": "prs_tollways",
+        "JHNSW": "JHNSW",
+        "Reliance": "pstrpl"
+    }
+    selected_db = org_to_db[org]
 
-# Date picker button and input
-with col1:
-    with st.container():
-        st.markdown("### \U0001F4C5 Select Date Range for Audit Count")
-        col1a, col1b = st.columns(2)
-        with col1a:
-            from_date = st.date_input("Select start date (From):", min_value=datetime.date(2020, 1, 1))
-        with col1b:
-            to_date = st.date_input("Select end date (To):", min_value=datetime.date(2020, 1, 1))
+    # Check if the organization has changed
+    if selected_db != st.session_state["org"]:
+        st.session_state["org"] = selected_db
+        st.session_state["data_loaded"] = False  # Reset data loaded status
+        st.session_state["results"] = None  # Reset results
 
-    if st.button("get count by site"):
-        st.session_state.faq_click = "audit_count"
+    # Filters
+    usernames = ["All"] + backend.get_all_usernames()
+    selected_users = st.multiselect("Select user(s) (optional):", usernames)
 
-if st.session_state.get("faq_click") == "audit_count":
-    faq_question = f"Give me the count of audits that are created between {from_date} and {to_date} group by site name,Note : use only Created_On col for this"
-    with st.spinner("Fetching audit counts..."):
-        try:
-            sql, df = backend.ask_llm_and_execute(faq_question)
-            st.session_state.sql = sql
-            st.session_state.df = df
-            st.success("✅ Query executed successfully!")
-            st.code(sql, language="sql")
-        except Exception as e:
-            st.error("❌ Failed to fetch audit count:")
-            st.code(str(e), language="bash")
-    st.session_state.faq_click = None
+    assets = ["All"] + backend.get_all_asset_names()
+    selected_assets = st.multiselect("Select Asset(s) (optional):", assets)
 
-st.markdown("<br>", unsafe_allow_html=True)
+    audit_types = ["All", "Auto Audits", "Manual Audits", "False audits"]
+    selected_audit_types = st.multiselect("Select Audit Type(s) (optional):", audit_types)
 
-with col2:
-    if st.button("TPs & FPs"):
-        st.session_state.faq_click = "tp_fp"
+    st.session_state['selected_users'] = selected_users if selected_users else None
+    st.session_state['selected_assets'] = selected_assets if selected_assets else None
+    st.session_state['audit_types'] = selected_audit_types if selected_audit_types else None
 
-if st.session_state.get("faq_click") == "tp_fp":
-    faq_question = (
-        "What is the total count of true positives (TP) and false positives (FP) in the anomaly audit records, "
-        "that are audited today for each site"
-    )
-    with st.spinner("Fetching TPs and FPs..."):
-        try:
-            sql, df = backend.ask_llm_and_execute(faq_question)
-            st.session_state.sql = sql
-            st.session_state.df = df
-            st.success("✅ Query executed successfully!")
-            st.code(sql, language="sql")
-        except Exception as e:
-            st.error("❌ Failed to fetch TP/FP counts:")
-            st.code(str(e), language="bash")
-    st.session_state.faq_click = None
+    # Date range filter
+    st.subheader("🗓️ Date Range")
+    start_date = st.date_input("Start Date", datetime.today())
+    end_date = st.date_input("End Date", datetime.today())
 
-# Initialize session state to store query results and SQL
-if 'df' not in st.session_state:
-    st.session_state.df = None
-if 'sql' not in st.session_state:
-    st.session_state.sql = None
+    # FAQ Buttons
+    st.subheader("📌 Quick FAQs")
+    faq_col1, faq_col2 = st.columns(2)
 
-# Natural language question input in a form
-with st.form("natural_language_query_form"):
-    user_question = st.text_input(
-        "\U0001F5E3️ Ask anything about anomaly audits (e.g., show anomalies for SRTL site created today):"
-    )
-    submit_query = st.form_submit_button("Ask")
+    if faq_col1.button("Get Audit Count for each site"):
+        question = f"Get the count of all the audits for each site, created between '{start_date}' and '{end_date}'."
 
-# Input validation
-if submit_query:
-    if not user_question.strip():
-        st.warning("⚠️ Please ask a valid question before submitting.")
+        if st.session_state['audit_types']:
+            audit_list = st.session_state['audit_types']
+            question += " Filter by audit types: " + ", ".join(st.session_state['audit_list']) + "."
+
+        if st.session_state['selected_users']:
+            user_list = "', '".join(st.session_state['selected_users'])
+            question += " For users: " + ", ".join(st.session_state['selected_users']) + "."
+
+        if st.session_state['selected_assets']:
+            asset_list = "', '".join(st.session_state['selected_assets'])
+            question += f" Only include rows where asset is in ('{asset_list}')."
+
+        st.session_state['question_passed'] = question
+        sql = backend.generate_sql_from_llm(question)
+        st.session_state['generated_sql'] = sql
+        result_df = backend.execute_sql_on_df(sql)
+        st.session_state['results'] = result_df
+
+    if faq_col2.button("TP/FP Analysis"):
+        question = f"Show TP and FP counts for each site, video_date between '{start_date}' and '{end_date}'."
+
+        if st.session_state['audit_types']:
+            audit_list = st.session_state['audit_types']
+            question += " Filter by audit types: " + ", ".join(st.session_state['audit_list']) + "."
+
+        if st.session_state['selected_users']:
+            user_list = "', '".join(st.session_state['selected_users'])
+            question += " For users: " + ", ".join(st.session_state['selected_users']) + "."
+
+        if st.session_state['selected_assets']:
+            asset_list = "', '".join(st.session_state['selected_assets'])
+            question += f" Only include rows where asset is in ('{asset_list}')."
+
+        st.session_state['question_passed'] = question
+        sql = backend.generate_sql_from_llm(question)
+        st.session_state['generated_sql'] = sql
+        result_df = backend.execute_sql_on_df(sql)
+        st.session_state['results'] = result_df
+
+# Main area for displaying results
+st.title(f"📋 Audit Dashboard - {org}")
+
+# Load data (only once per session or org change)
+@st.cache_data(show_spinner="Loading data...")
+def load_data(selected_db):
+    st.write("Loading data...")  
+    return backend.load_and_join_data(selected_db)
+
+if not st.session_state["data_loaded"]:
+    df = load_data(st.session_state["org"])
+    if df is not None and not df.empty:
+        st.session_state["data_loaded"] = True
+        st.write("Data loaded successfully.")
     else:
-        with st.spinner("Thinking..."):
-            try:
-                sql, df = backend.ask_llm_and_execute(user_question)
-                st.session_state.sql = sql
-                st.session_state.df = df
-                st.success("✅ Query executed successfully!")
-            except Exception as e:
-                st.error("❌ Error while processing your query:")
-                st.code(str(e), language="bash")
-                st.info("Try asking again in simpler language.")
+        st.write("No data loaded.")
+else:
+    st.write("Data loaded successfully.")
 
-# Schema browser with error handling
-with st.expander("\U0001F4C4 View Joined Table Schema"):
-    try:
-        backend.create_joined_view()
-        view_schema = backend.get_view_schema()
-        st.markdown("### Joined View Schema")
-        st.dataframe(
-            [[col[0], col[1], col[2], col[3], col[4], col[5]] for col in view_schema],
-            column_config={
-                0: "Field",
-                1: "Type",
-                2: "Null",
-                3: "Key",
-                4: "Default",
-                5: "Extra"
-            },
-            use_container_width=True
-        )
-        st.markdown("#### Table Content")
-        st.info(
-            f"This view combines data from both anomaly_audit and site tables. "
-            f"It includes all fields from anomaly_audit plus an additional 'site_name' column "
-            f"from the site table. You can query using either site_id or site_name."
-        )
-    except Exception as e:
-        st.warning("⚠️ Unable to load schema.")
-        st.code(str(e), language="bash")
+# Ask Anything Section
+st.markdown("### Ask Anything about the audits")
 
-# Show generated SQL query
-if st.session_state.sql is not None:
-    with st.expander("\U0001F50D View Generated SQL", expanded=True):
-        st.code(st.session_state.sql, language="sql")
+custom_query = st.text_input("Ask anything about anomaly audits:")
+if st.button("Run Query") and custom_query:
+    st.session_state['question_passed'] = custom_query
+    sql = backend.generate_sql_from_llm(custom_query)
+    st.session_state['generated_sql'] = sql
+    result_df = backend.execute_sql_on_df(sql)
+    st.session_state['results'] = result_df  # Store the result in the session state
 
-# Show query results with pagination if data is available
-if st.session_state.df is not None and not st.session_state.df.empty:
-    st.markdown("### \U0001F4CA Query Results")
-    st.write(f"Found {len(st.session_state.df)} records")
+# Display results section - now displayed only once
+if st.session_state.get('results') is not None:
+    st.markdown("#### 📊 Results")
 
+    if 'question_passed' in st.session_state:
+        st.write(f"**Question asked:** {st.session_state['question_passed']}")
+    if 'generated_sql' in st.session_state:
+        st.write(f"**Generated SQL:** {st.session_state['generated_sql']}")
+
+    df = st.session_state['results']
+    total_rows = len(df)
     page_size = 100
-    total_pages = len(st.session_state.df) // page_size + (1 if len(st.session_state.df) % page_size > 0 else 0)
+    total_pages = (total_rows - 1) // page_size + 1
 
-    if total_pages > 0:
-        col1, col2 = st.columns([1, 5])
-        with col1:
-            page = st.number_input("Page", min_value=1, max_value=total_pages, value=1)
-        with col2:
-            st.markdown(f"Page {page} of {total_pages}")
+    # Ensure total_pages is at least 1
+    total_pages = max(total_pages, 1)
 
-        start = (page - 1) * page_size
-        end = start + page_size
-        paginated_df = st.session_state.df.iloc[start:end]
-        st.dataframe(paginated_df, use_container_width=True)
-    else:
-        st.info("No data available to display.")
-elif st.session_state.df is not None:
-    st.warning("Query returned no results.")
+    # Page selector
+    page = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
 
-# Add a footer with helpful examples
-st.markdown("---")
-with st.expander("\U0001F4DD Example Queries"):
-    st.markdown("""
-    - Show me all anomalies from SRTL site  
-    - Show anomalies created last week  
-    - Count of audits done today  
-    - TP and FP breakdown by site
-    """)
+    # Slice the DataFrame for current page
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    st.dataframe(df.iloc[start_idx:end_idx])
+
+    # Optional: show page info
+    st.caption(f"Showing records {start_idx+1} to {min(end_idx, total_rows)} of {total_rows}")
