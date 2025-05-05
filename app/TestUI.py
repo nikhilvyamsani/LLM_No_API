@@ -97,7 +97,7 @@ if mode == "Anomaly Audit Assistant":
             st.session_state['results'] = result_df
 
         if faq_col2.button("TP/FP Analysis"):
-            question = f"Show TP and FP counts for each site, video_date >='{start_date}' and<'{end_date}'."
+            question = f"Show TP and FP counts for each site, Audited on >='{start_date}' and<'{end_date}'."
             if st.session_state['audit_types']:
                 question += f" Filter by audit types: {', '.join(st.session_state['audit_types'])}."
             if st.session_state['selected_users']:

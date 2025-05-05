@@ -140,7 +140,7 @@ Instructions:
 
 Date Filtering Instructions:
 - For questions about TPs and FPs:
-  - Always apply any date filter on the `video_date` column.
+  - Always apply any date filter on the `Audited_on` column.
 -For Audit count :
   -Always apply any date filter on the `Created_On` column.
 - Date filters examples:
