@@ -95,14 +95,16 @@ You have access to a SQL table called `df` with the following schema:
 Instructions:
 - Only use columns listed in the schema above. Never guess column names.
 - Use only relevant columns for the specific question.
+-To check for videos proccessed on a date or date range , use video_date for the given date input and is_processed =1 and progess_value = 100.
 -for date related queries
   - If the question specifies an exact date like '2024-04-01', use for ex like : `video_date LIKE 'YYYY-MM-DD%'`.
-  - If the question specifies a date range, use for example: `video_date >= 'YYYY-MM-DD' AND video_date < 'YYYY-MM-DD'`.
-
+  - If the question specifies a date range, use for example: `video_date >= 'YYYY-MM-DD' AND video_date <= 'YYYY-MM-DD'`.
+-if asked for each site,use group by site name
 - to check whether the videos are processed, use progress_value = 100 ->processed else not processed.
 - the below are the col descriptions :
  - video_date  : date when video is recorded or taken
  - processed_on : date when video is processed by client or uploaded to the tool for processing
+ - is_processed : 1 -> video is processed, 0 -> video is not processed
  - progress_value : 100 -> video is completely processed, else not processed
  Question : 
  {question}
