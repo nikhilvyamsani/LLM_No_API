@@ -52,14 +52,14 @@ with st.sidebar:
     # Date range filter
     st.subheader("🗓️ Date Range")
     start_date = st.date_input("Start Date", datetime.today())
-    end_date = st.date_input("End Date", datetime.today())
+    end_date = st.date_input("End Date (excludes)", datetime.today())
 
     # FAQ Buttons
     st.subheader("📌 Quick FAQs")
     faq_col1, faq_col2 = st.columns(2)
 
     if faq_col1.button("Get Audit Count for each site"):
-        question = f"Get the count of all the audits for each site, created between '{start_date}' and '{end_date}'."
+        question = f"Get the count of all the audits for each site,for created >= '{start_date}' and < '{end_date}'."
 
         if st.session_state['audit_types']:
             audit_list = st.session_state['audit_types']
@@ -80,7 +80,7 @@ with st.sidebar:
         st.session_state['results'] = result_df
 
     if faq_col2.button("TP/FP Analysis"):
-        question = f"Show TP and FP counts for each site, video_date between '{start_date}' and '{end_date}'."
+        question = f"Show TP and FP counts for each site,for video_date >='{start_date}' and < '{end_date}'."
 
         if st.session_state['audit_types']:
             audit_list = st.session_state['audit_types']

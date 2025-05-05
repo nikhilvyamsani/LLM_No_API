@@ -102,7 +102,7 @@ Date Filtering Instructions:
 - Date filters examples:
   - If the question says 'today' or 'now', use for ex like :`video_date LIKE CONCAT(CURDATE(), '%')`.
   - If the question specifies an exact date like '2024-04-01', use for ex like : `video_date LIKE 'YYYY-MM-DD%'`.
-  - If the question specifies a date range,use for ex like : `video_date BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'`.
+  - If the question specifies a date range, use for example: `video_date >= 'YYYY-MM-DD' AND video_date < 'YYYY-MM-DD'`.
   - Never assume today's date unless the user explicitly mentions it.
 
 Other Instructions:

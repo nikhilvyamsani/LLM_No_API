@@ -16,9 +16,11 @@ SITE_DB = "seekright_v3"
 SITE_TABLE = "tbl_site"
 USER_TABLE = "tbl_user"
 ANOMALY_TABLE = "anomaly_audit"
+STATICS_TABLE = "tbl_site_statics"
 
 # Cached global dataframe
 global_df = None
+global_site_statics_df = None
 
 
 def get_mysql_connection():
@@ -65,13 +67,53 @@ def load_and_join_data(anomaly_db: str) -> pd.DataFrame:
     global_df = df  # Cache the global DataFrame for later use
     return df
 
+def load_site_statics_data(anomaly_db: str) -> pd.DataFrame:
+    """Loads site statics data into a DataFrame."""
+    global global_site_statics_df
+    conn = get_mysql_connection()
+    query = f"""
+    SELECT ss.*, s.site_name FROM  {anomaly_db}.{STATICS_TABLE} ss
+    LEFT JOIN {SITE_DB}.{SITE_TABLE} s ON ss.site_id = s.site_id
+    """
+    df = pd.read_sql(query, conn)
+    conn.close()
+
+    global_site_statics_df = df 
+    return df
+
 
 def generate_schema_description(df: pd.DataFrame) -> str:
     """Converts DataFrame schema to a string format for LLM prompt."""
     return "\n".join([f"- {col}: {df[col].dtype}" for col in df.columns])
 
+def build_query_prompt_statics (schema_description: str, question: str) -> str:
+    """Builds the prompt for SQL generation based on schema and question."""
+    return f"""
+You are a helpful SQL assistant that generates valid SQL queries from natural language questions.
+You have access to a SQL table called `df` with the following schema:   
+{schema_description}
+Instructions:
+- Only use columns listed in the schema above. Never guess column names.
+- Use only relevant columns for the specific question.
+-for date related queries
+  - If the question specifies an exact date like '2024-04-01', use for ex like : `video_date LIKE 'YYYY-MM-DD%'`.
+  - If the question specifies a date range, use for example: `video_date >= 'YYYY-MM-DD' AND video_date < 'YYYY-MM-DD'`.
 
-def build_query_prompt(schema_description: str, question: str) -> str:
+- to check whether the videos are processed, use progress_value = 100 ->processed else not processed.
+- the below are the col descriptions :
+ - video_date  : date when video is recorded or taken
+ - processed_on : date when video is processed by client or uploaded to the tool for processing
+ - progress_value : 100 -> video is completely processed, else not processed
+ Question : 
+ {question}
+ Respond with only the SQL query.
+
+
+"""
+
+
+
+def build_query_prompt_audits(schema_description: str, question: str) -> str:
     """Builds the prompt for SQL generation based on schema and question."""
     return f"""
 You are a helpful SQL assistant that generates valid SQL queries from natural language questions.
@@ -102,7 +144,7 @@ Date Filtering Instructions:
 - Date filters examples:
   - If the question says 'today' or 'now', use for ex like :`video_date LIKE CONCAT(CURDATE(), '%')`.
   - If the question specifies an exact date like '2024-04-01', use for ex like : `video_date LIKE 'YYYY-MM-DD%'`.
-  - If the question specifies a date range,use for ex like : `video_date BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'`.
+  - If the question specifies a date range, use for example: `video_date >= 'YYYY-MM-DD' AND video_date < 'YYYY-MM-DD'`.
   - Never assume today's date unless the user explicitly mentions it.
 
 Other Instructions:
@@ -114,8 +156,31 @@ Question:
 {question}
 
 Respond with only the SQL query.
-"""
 
+"""
+def generate_sql_from_llm_statics(question: str)->str:
+    """Uses LLM to generate SQL based on user question and current schema."""
+    global global_site_statics_df
+    if global_site_statics_df is None or global_site_statics_df.empty:
+        return "-- No data loaded."
+
+    schema_description = generate_schema_description(global_site_statics_df)
+    prompt_template = build_query_prompt_statics(schema_description, question)
+
+    prompt = PromptTemplate(
+        input_variables=["question", "schema_description"],
+        template=prompt_template
+    )
+    llm = Ollama(model="llama3", temperature=0)
+    chain = LLMChain(llm=llm, prompt=prompt)
+
+    try:
+        output = chain.run({"question": question, "schema_description": schema_description})
+        # Extract SQL using regex
+        sql = re.search(r"(?i)(SELECT\s.+?)(?=;|$)", output, re.DOTALL)
+        return sql.group(1).strip() if sql else output.strip()
+    except Exception as e:
+        return f"-- Error generating SQL: {e}"
 
 def generate_sql_from_llm(question: str) -> str:
     """Uses LLM to generate SQL based on user question and current schema."""
@@ -124,7 +189,7 @@ def generate_sql_from_llm(question: str) -> str:
         return "-- No data loaded."
 
     schema_description = generate_schema_description(global_df)
-    prompt_template = build_query_prompt(schema_description, question)
+    prompt_template = build_query_prompt_audits(schema_description, question)
 
     prompt = PromptTemplate(
         input_variables=["question", "schema_description"],
@@ -153,3 +218,15 @@ def execute_sql_on_df(query: str) -> pd.DataFrame:
     except Exception as e:
         print(f"SQL execution error: {e}")
         return pd.DataFrame({"error": [str(e)]})
+
+def execute_sql_on_df_statics(query : str)->pd.DataFrame:
+    """Executes SQL query using pandasql on the global DataFrame."""
+    global global_site_statics_df
+    if global_site_statics_df is None or global_site_statics_df.empty:
+        return pd.DataFrame({"error": ["No data loaded to query."]})
+    try:
+        return ps.sqldf(query, {"df": global_site_statics_df})
+    except Exception as e:
+        print(f"SQL execution error: {e}")
+        return pd.DataFrame({"error": [str(e)]})
+
