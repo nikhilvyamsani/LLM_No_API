@@ -21,6 +21,7 @@ STATICS_TABLE = "tbl_site_statics"
 # Cached global dataframe
 global_df = None
 global_site_statics_df = None
+combined_df = None
 
 
 def get_mysql_connection():
@@ -81,6 +82,41 @@ def load_site_statics_data(anomaly_db: str) -> pd.DataFrame:
     global_site_statics_df = df 
     return df
 
+def load_all_site_statics(org_db_map: dict[str, str]) -> pd.DataFrame:
+    """
+    Load site statics data from multiple org DBs and add 'org_name' column.
+
+    Args:
+        org_db_map (dict): Keys are org names, values are anomaly DB names.
+
+    Returns:
+        pd.DataFrame: Combined DataFrame with org_name column
+    """
+    all_dfs = []
+
+    for org_name, anomaly_db in org_db_map.items():
+        conn = get_mysql_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        query = f"""
+        SELECT ss.*, s.site_name 
+        FROM {anomaly_db}.{STATICS_TABLE} ss
+        LEFT JOIN {SITE_DB}.{SITE_TABLE} s ON ss.site_id = s.site_id
+        """
+        
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        df = pd.DataFrame(rows)
+        df.insert(0, "org_name", org_name)  # Add org_name as first column
+
+        all_dfs.append(df)
+        cursor.close()
+        conn.close()
+
+    combined_df = pd.concat(all_dfs, ignore_index=True)
+    return combined_df
+
+
 
 def generate_schema_description(df: pd.DataFrame) -> str:
     """Converts DataFrame schema to a string format for LLM prompt."""
@@ -97,8 +133,9 @@ Instructions:
 - Use only relevant columns for the specific question.
 -To check for videos proccessed on a date or date range , use video_date for the given date input and is_processed =1 and progess_value = 100.
 -for date related queries
-  - If the question specifies an exact date like '2024-04-01', use for ex like : `video_date LIKE 'YYYY-MM-DD%'`.
-  - If the question specifies a date range, use for example: `video_date >= 'YYYY-MM-DD' AND video_date <= 'YYYY-MM-DD'`.
+  - Never use 'between' keyword for filtering for given date rage (like from and to dates),follow below:
+    - If the question specifies an exact date like '2024-04-01', use for ex like : `video_date LIKE 'YYYY-MM-DD%'`.
+    - If the question specifies a date range, use for example: `video_date >= 'YYYY-MM-DD' AND video_date <= 'YYYY-MM-DD' .
 -if asked for each site,use group by site name
 - to check whether the videos are processed, use progress_value = 100 ->processed else not processed.
 - the below are the col descriptions :
@@ -137,7 +174,7 @@ Instructions:
       -False Audits : dalse_audit =1
 - If the question asks for an **audit count by site**, only use the necessary columns (like `site_name` and relevant date columns).
 - For date filtering, always refer to `video_date`, `Audited_On`, `Created_On` depending on the context (unless specified otherwise).
-
+- To know whether the records are autited or not use IsAudited = 1 -> audited else if IsAudited = 0 not audited.
 Date Filtering Instructions:
 - For questions about TPs and FPs:
   - Always apply any date filter on the `Audited_on` column.
@@ -145,9 +182,10 @@ Date Filtering Instructions:
   -Always apply any date filter on the `Created_On` column.
 - Date filters examples:
   - If the question says 'today' or 'now', use for ex like :`video_date LIKE CONCAT(CURDATE(), '%')`.
-  - If the question specifies an exact date like '2024-04-01', use for ex like : `video_date LIKE 'YYYY-MM-DD%'`.
-  - If the question specifies a date range, use for example: `video_date >= 'YYYY-MM-DD' AND video_date < 'YYYY-MM-DD'`.
-  - Never assume today's date unless the user explicitly mentions it.
+  - Never use 'between' keyword for filtering for given date rage (like from and to dates),follow below:
+    - If the question specifies an exact date like '2024-04-01', use for ex like : `video_date LIKE 'YYYY-MM-DD%'`.
+    - If the question specifies a date range, use for example: `video_date >= 'YYYY-MM-DD' AND video_date < 'YYYY-MM-DD'`.
+    - Never assume today's date unless the user explicitly mentions it.
 
 Other Instructions:
 - Use `site_name` for site-level filters, and `site_id` for ID-based filters.
