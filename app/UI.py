@@ -1,9 +1,12 @@
+from unittest import loader
 import streamlit as st
 import plotly.express as px
 import pandas as pd
 from datetime import datetime,timedelta
 import Main as backend
 from apscheduler.schedulers.background import BackgroundScheduler
+import time
+import threading
 
 st.set_page_config(page_title="Anomaly Audit & Site Statics Assistant", layout="wide")
 
@@ -36,7 +39,6 @@ if mode == "Anomaly Audit Assistant":
         st.session_state["org"] = selected_db
         load_data(selected_db)
     with st.sidebar:
-
         org = st.selectbox("Select Organization", [
             "Sekura", "Roadis-NH08", "Maple Highways", "Adani Road Transport Limited", "JHNSW", "Reliance"
         ], key="org_selectbox", on_change=on_org_change)
@@ -48,8 +50,8 @@ if mode == "Anomaly Audit Assistant":
             "JHNSW": "JHNSW",
             "Reliance": "pstrpl"
         }
-        selected_db = org_to_db[org]
-
+        selected_db = org_to_db[st.session_state["org_selectbox"]]
+        df = backend.load_and_join_data(org_to_db[st.session_state["org_selectbox"]])
         # Filters
         usernames = ["All"] + backend.get_all_usernames()
         selected_users = st.multiselect("Select user(s) (optional):", usernames)
@@ -77,6 +79,7 @@ if mode == "Anomaly Audit Assistant":
         st.subheader("📌 Quick FAQs")
         faq_col1, faq_col2 = st.columns(2)
 
+
         if faq_col1.button("Get Audit Count for each site"):
             question = f"Get the count of all the records which are not audited for each site,for {st.session_state['selected_date']} >= '{start_date}' and < '{end_date}'."
             if st.session_state['audit_types']:
@@ -88,7 +91,7 @@ if mode == "Anomaly Audit Assistant":
             st.session_state['question_passed'] = question
             sql = backend.generate_sql_from_llm(question)
             st.session_state['generated_sql'] = sql
-            result_df = backend.execute_sql_on_df(sql)
+            result_df = backend.execute_sql_on_df(sql,df)
             st.session_state['results'] = result_df
 
         if faq_col2.button("TP/FP Analysis"):
@@ -102,9 +105,8 @@ if mode == "Anomaly Audit Assistant":
             st.session_state['question_passed'] = question
             sql = backend.generate_sql_from_llm(question)
             st.session_state['generated_sql'] = sql
-            result_df = backend.execute_sql_on_df(sql)
+            result_df = backend.execute_sql_on_df(sql,df)
             st.session_state['results'] = result_df
-
     st.title(f"📋 Anomaly Audit Dashboard - {org} ")
 
     # Load data (only once per session or org change)
@@ -114,10 +116,10 @@ if mode == "Anomaly Audit Assistant":
 
     # Use Streamlit spinner outside for visual feedback
     with st.spinner("Loading data..."):
-        df = load_data(selected_db)
+        df = load_data(org_to_db[st.session_state["org_selectbox"]])
 
     if not st.session_state["data_loaded"]:
-        df = load_data(st.session_state["org"])
+        df = load_data(org_to_db[st.session_state["org_selectbox"]])
         if df is not None and not df.empty:
             st.session_state["data_loaded"] = True
             st.write("Data loaded successfully.")
@@ -130,11 +132,13 @@ if mode == "Anomaly Audit Assistant":
     st.markdown("### Ask Anything about the audits")
 
     custom_query = st.text_input("Ask anything about anomaly audits:")
+
     if st.button("Run Query"):
         st.session_state['question_passed'] = custom_query
         sql = backend.generate_sql_from_llm(custom_query)
         st.session_state['generated_sql'] = sql
-        result_df = backend.execute_sql_on_df(sql)
+        
+        result_df = backend.execute_sql_on_df(sql,df)
         st.session_state['results'] = result_df
 
     # Display results section
@@ -163,27 +167,41 @@ if mode == "Anomaly Audit Assistant":
 
         # Optional: show page info
         st.caption(f"Showing records {start_idx+1} to {min(end_idx, total_rows)} of {total_rows}")
-
-    # Define the on_org_change function
-
 # Site Statics Mode
 elif mode == "Site Statics":
+    def on_org_change():
+        # Reset data loaded status and results when the organization changes
+        st.session_state["data_loaded"] = False
+        st.session_state["results"] = None
+        # Reload the data for the new organization
+        selected_db = org_to_db[st.session_state["org_selectbox"]]
+        st.session_state["org"] = selected_db
+        load_data_site(selected_db)
+    # Sidebar: Organization selection
+    with st.sidebar:
+        org = st.selectbox("Select Organization", [
+            "Sekura", "Roadis-NH08", "Maple Highways", "Adani Road Transport Limited", "JHNSW", "Reliance"
+        ], key="org_selectbox", on_change=on_org_change)
+        org_to_db = {
+            "Sekura": "sr_lnt",
+            "Roadis-NH08": "nh08_roadis",
+            "Maple Highways": "Maple_Highways",
+            "Adani Road Transport Limited": "prs_tollways",
+            "JHNSW": "JHNSW",
+            "Reliance": "pstrpl"
+        }
+        selected_db = org_to_db[st.session_state["org_selectbox"]]
+
     st.title(f"📋 Site Statics Dashboard ")
-
-    org_to_db = {
-        "Sekura": "sr_lnt",
-        "Roadis-NH08": "nh08_roadis",
-        "Maple Highways": "Maple_Highways",
-        "Adani Road Transport Limited": "prs_tollways",
-        "JHNSW": "JHNSW",
-        "Reliance": "pstrpl"
-    }
-
     # Function to load data from the backend
     def load_data_statics(org_to_db):
         # Load data from the backend
         return backend.load_all_site_statics(org_to_db)
-
+    def load_data_site(selected_db):
+        return backend.load_site_statics_data(selected_db)
+    global df_site 
+    df_site = load_data_site(selected_db)
+    
     # Function to generate insights
     def generate_insights(df_statics):
         today = datetime.today()
@@ -257,7 +275,7 @@ elif mode == "Site Statics":
         st.session_state['question_passed'] = custom_query_statics
         sql = backend.generate_sql_from_llm_statics(custom_query_statics)
         st.session_state['generated_sql'] = sql
-        result_df_statics = backend.execute_sql_on_df_statics(sql)
+        result_df_statics = backend.execute_sql_on_df_statics(sql,df_site)
         st.session_state['results'] = result_df_statics
 
     # Display results section

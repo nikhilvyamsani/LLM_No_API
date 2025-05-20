@@ -21,6 +21,7 @@ STATICS_TABLE = "tbl_site_statics"
 # Cached global dataframe
 global_df = None
 global_site_statics_df = None
+global_site_df = None
 combined_df = None
 
 
@@ -114,6 +115,13 @@ def load_all_site_statics(org_db_map: dict[str, str]) -> pd.DataFrame:
         conn.close()
 
     combined_df = pd.concat(all_dfs, ignore_index=True)
+    if 'plaza' in combined_df.columns and 'Plaza' in combined_df.columns:
+        combined_df['plaza'] = combined_df['plaza'].combine_first(combined_df['Plaza'])
+        combined_df.drop(columns=['Plaza'], inplace=True)
+
+    global global_site_statics_df
+    global_site_statics_df = combined_df
+
     return combined_df
 
 
@@ -183,7 +191,7 @@ Date Filtering Instructions:
 - Date filters examples:
   - If the question says 'today' or 'now', use for ex like :`video_date LIKE CONCAT(CURDATE(), '%')`.
   - Never use 'between' keyword for filtering for given date rage (like from and to dates),follow below:
-    - If the question specifies an exact date like '2024-04-01', use for ex like : `video_date LIKE 'YYYY-MM-DD%'`.
+    - If the question specifies an exact date like '2024-04-01' or yesterday or today kinds, use for ex like : `video_date Like 'YYYY-MM-DD%'`.
     - If the question specifies a date range, use for example: `video_date >= 'YYYY-MM-DD' AND video_date < 'YYYY-MM-DD'`.
     - Never assume today's date unless the user explicitly mentions it.
 
@@ -247,25 +255,23 @@ def generate_sql_from_llm(question: str) -> str:
         return f"-- Error generating SQL: {e}"
 
 
-def execute_sql_on_df(query: str) -> pd.DataFrame:
+def execute_sql_on_df(query: str,df : pd.DataFrame) -> pd.DataFrame:
     """Executes SQL query using pandasql on the global DataFrame."""
-    global global_df
-    if global_df is None or global_df.empty:
+    if df is None or df.empty:
         return pd.DataFrame({"error": ["No data loaded to query."]})
 
     try:
-        return ps.sqldf(query, {"df": global_df})
+        return ps.sqldf(query, {"df": df})
     except Exception as e:
         print(f"SQL execution error: {e}")
         return pd.DataFrame({"error": [str(e)]})
 
-def execute_sql_on_df_statics(query : str)->pd.DataFrame:
+def execute_sql_on_df_statics(query : str, df : pd.DataFrame)->pd.DataFrame:
     """Executes SQL query using pandasql on the global DataFrame."""
-    global global_site_statics_df
-    if global_site_statics_df is None or global_site_statics_df.empty:
+    if df is None or df.empty:
         return pd.DataFrame({"error": ["No data loaded to query."]})
     try:
-        return ps.sqldf(query, {"df": global_site_statics_df})
+        return ps.sqldf(query, {"df": df})
     except Exception as e:
         print(f"SQL execution error: {e}")
         return pd.DataFrame({"error": [str(e)]})
